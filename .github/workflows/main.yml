@@ -1,0 +1,130 @@
+# This workflow will build a Java project with Maven, and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-maven
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: Maven Package
+
+
+on:
+  push:
+   branches: [githubAction]  
+env:
+ projectTag: cm-campaign-service
+# permissions:
+#       id-token: write   # This is required for requesting the JWT
+#       contents: read    # This is required for actions/checkout
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+        cache: 'maven'
+    - name: Check Java version
+      run: java -version
+    - uses: cschleiden/replace-tokens@v1
+      with:
+        files: '["settings.xml"]'
+      env:
+        USERNAME: ${{secrets.ArtifactoryUsername}}
+        PASSWORD: ${{secrets.ArtifactoryPassword}}
+    - run: cat settings.xml   
+    - name: Cache Maven packages      
+      uses: actions/cache@v2      
+      with:        
+        path: ~/.m2        
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}        
+        restore-keys: |           
+          ${{ runner.os }}-m2
+    - name: Run Unit Tests,Compile,Upload to Artifactory
+      run: mvn -s ./settings.xml clean deploy -Dmaven.test.failure.ignore=true -X
+    # - name: Run Gitleaks
+    #   if: always()
+    #   id: gitleaks
+    #   uses: DariuszPorowski/github-action-gitleaks@v2
+    #   with:
+    #       fail: true
+ 
+    # - name: Post GitLeaks Report
+    #   if: always()
+    #   uses: actions/github-script@v6
+    #   with:
+    #     github-token: ${{ github.token }}
+    #     script: |
+    #        const { GITLEAKS_RESULT, GITLEAKS_OUTPUT } = process.env
+    #         const output = `### ${GITLEAKS_RESULT}
+ 
+    #         <details><summary>Log output</summary>
+ 
+    #         ${GITLEAKS_OUTPUT}
+ 
+    #         </details>
+    #         `
+    #         github.rest.issues.create({
+    #             ...context.repo,
+    #             title: `Gitleaks Scan Report`,
+    #             body: output
+    #           })
+      # env:
+      #     GITLEAKS_RESULT: ${{ steps.gitleaks.outputs.result }}
+      #     GITLEAKS_OUTPUT: ${{ steps.gitleaks.outputs.output }}
+    - name: SonarQube Scan
+      run: mvn -s ./settings.xml org.sonarsource.scanner.maven:sonar-maven-plugin:3.8.0.2131:sonar -Dsonar.projectName=communication-cm-campaign-service -Dsonar.projectKey=communication-cm-campaign-service -Dsonar.coverage.jacoco.xmlReportPaths='./target/jacoco-ut/jacoco.xml
+      # uses: sonarsource/sonarqube-scan-action@master
+      # env:
+      #   SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #   SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    
+    # - name: Read VERSION file
+    #   id: getversion
+    #   run: echo "version=$(cat version)" >> $GITHUB_OUTPUT
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ secrets.ROLE_ARN }}
+        aws-region: ap-south-1
+        # role-session-name: CmAccount
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: cm-campaign-service
+        IMAGE_TAG: ${{ inputs.version }}.${{ github.run_number }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+    
+    - name: Deployment
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USER }}
+        key: ${{ secrets.SSHKEY }}
+        # sync: true
+        # timeout: 120
+        port: 22
+        script: |
+          sudo chmod +x /home/ec2-user/scripts/deploy_campaign_service.sh
+          bash /home/ec2-user/scripts/deploy_campaign_service.sh ${{ secrets.AWS_ACCESS_KEY_ID}} ${{ secrets.AWS_SECRET_ACCESS_KEY}} ${{ secrets.REGION }} ${{ secrets.PROFILE }} ${{ steps.getversion.outputs.version }}.${{ github.run_number }}
+    # # Optional: Uploads the full dependency graph to GitHub to improve the quality of Dependabot alerts this repository can receive
+    # - name: Update dependency graph
+    #   uses: advanced-security/maven-dependency-submission-action@571e99aab1055c2e71a1e2309b9691de18d6b7d6
