@@ -1,0 +1,149 @@
+pipeline {
+    agent any
+    environment{
+        PATH="/opt/maven/bin:$PATH"
+        //BUILD_NUMBER = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Code Checkout') {
+            steps {
+                    git credentialsId: 'mohdbaquir', url: 'https://git.nagarro.com/freshertraining2023/mohdbaquir.git'
+                    echo 'The Repository has been cloned.'
+            }
+        }
+        
+        stage('Code Build') {
+              steps{
+                  
+                 sh 'mvn -f Assignment1/calc/pom.xml clean install'
+                 sh 'mvn -f Assignment1/calc/pom.xml test'
+                 junit '**Assignment1/calc/target/surefire-reports/*.xml'
+               
+                 }
+            }
+
+       
+        stage("SonarQube"){
+              steps{
+                     withSonarQubeEnv('sonar5') { 
+                      sh "mvn -f Assignment1/calc/pom.xml sonar:sonar" //-Dsonar.projectKey=maven-project -Dsonar.host.url=http://192.168.56.101:9091 -Dsonar.login=fa7189595569409bdf3b7f6c03b638b0098ea787"
+                    
+                     }
+             }
+          }
+         
+          stage("Quality Gate") {
+             steps {
+               timeout(time: 1, unit: 'HOURS') {
+                 waitForQualityGate abortPipeline: true, credentialsId: 'sonar-jenkins'
+               }
+             }
+            }
+        
+        
+        stage("Publish to Artifactory"){
+        steps{
+                  rtUpload (
+                      serverId: 'artifactory-server',
+                      spec: '''{
+                            "files": [
+                               {
+                                 "pattern": "Assignment1/calc/*.war",
+                              "target": "artifacts/${BUILD_NUMBER}"
+                              }
+                            ]
+                       }''',
+                
+                   )
+               }
+            }
+
+
+        //    stage('Code Build') {
+        //      steps{
+        //          withCredentials([string(credentialsId: 'docker-jfrog', variable: 'AUTH_TOKEN')]) {
+        //          //sh 'mvn -f Assignment1/calc/pom.xml clean install'
+        //          //sh 'mvn -f Assignment1/calc/pom.xml test'
+        //         sh 'docker build --build-arg AUTH_TOKEN=${AUTH_TOKEN} --build-arg BUILD_NUMBER=${BUILD_NUMBER} -f Assignment1/calc/Dockerfile -t testimage5 /var/lib/jenkins/workspace/assignment-2/Assignment1/calc/'
+        //         sh 'docker container run -d -p 80:8080 testimage5'
+        //          }
+        //      }
+        //  }
+        
+        
+        //  stage('AWS Authentication')
+        //  {
+        //      steps{
+        //          script{
+        //          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+        //                 credentialsId: 'AWS-Cred',
+        //                 accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+        //                  secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+        //              sh "aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID"
+        //              sh "aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY"
+        //              sh "aws configure set region us-east-2"
+        //              sh "aws ecr get-login-password --region us-east-2 > ecr-login.txt"
+        //              sh "docker login --username AWS --password-stdin 876724398547.dkr.ecr.us-east-2.amazonaws.com < ecr-login.txt"
+        //              }
+        //          }
+        //      }
+        //  }
+
+
+         stage('Build Docker image') {
+             steps {
+                 withCredentials([string(credentialsId: 'docker-jfrog', variable: 'AUTH_TOKEN')]){
+                 sh 'docker build --build-arg AUTH_TOKEN=${AUTH_TOKEN} --build-arg BUILD_NUMBER=${BUILD_NUMBER} -f Assignment1/calc/Dockerfile -t baquirrepo /var/lib/jenkins/workspace/assignment-2/Assignment1/calc/'
+                 }
+             }
+         }
+
+        
+          stage('Push to ECR') {
+     steps {
+         script {
+             docker.withRegistry('https://876724398547.dkr.ecr.us-east-2.amazonaws.com', 'ecr:us-east-2:AWS-Cred') {
+                 
+                     //sh 'aws ecr batch-delete-image --repository-name baquirrepo --image-ids imageTag=latest --region us-east-2'
+                     //sh 'docker build --build-arg AUTH_TOKEN=${AUTH_TOKEN} --build-arg BUILD_NUMBER=${BUILD_NUMBER} -f Assignment1/calc/Dockerfile -t baquirrepo /var/lib/jenkins/workspace/assignment-2/Assignment1/calc/'
+                     sh 'docker tag baquirrepo:latest 876724398547.dkr.ecr.us-east-2.amazonaws.com/baquirrepo:latest'
+                     sh 'docker push 876724398547.dkr.ecr.us-east-2.amazonaws.com/baquirrepo:latest'
+                
+             }
+         }
+    }
+  }
+
+        
+        
+        // stage("Deploying apps using helm"){
+        //     steps{
+        //         script{
+        //             withKubeConfig(caCertificate: '', clusterName: 'baquir10.k8s.local', contextName: 'baquir10.k8s.local', credentialsId: 'Baquir-kubectl', namespace: '', restrictKubeConfigAccess: false, serverUrl: '') {
+        //                     sh 'kubectl delete service helm-chart'
+        //                     sh 'helm uninstall helm-chart'
+        //                     sh 'cd Assignment1/calc && helm install helm-chart ./helm-chart'
+                       
+ 
+ 
+        //                     sh 'kubectl delete service nginx-app'
+        //                     sh 'helm uninstall nginx-app'
+        //                     sh ' cd Assignment1/calc && helm install nginx-app ./nginx-app'
+        //                     }
+        //         }    
+        //     }
+
+        // }
+    }
+    
+     post{
+         always{
+           mail to: "mohdbaquir2010@gmail.com",
+              subject: "Jenkins Job with Build #${BUILD_NUMBER}",
+            body: "Jenkins Job with Build #${BUILD_NUMBER}. Please go to ${BUILD_URL} and verify the build."
+    //junit '**Assignment1/calc/target/surefire-reports/*.xml'
+       }
+    }
+}
+    
